@@ -6,7 +6,7 @@
 
 set -u
 
-RAW="${REPO_RAW:-https://raw.githubusercontent.com/Nubian353/podkop-sub/main}"
+RAW="${REPO_RAW:-https://raw.githubusercontent.com/Nubian353/podkop-subscription-addon/main}"
 
 SUB_URL=""
 TOP_N="6"

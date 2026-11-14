@@ -1,4 +1,6 @@
-# podkop-sub
+# podkop-subscription-addon
+
+Аддон к Podkop: подписки, которых у него нет из коробки.
 
 Автоматическое обновление узлов [Podkop](https://github.com/itdoginfo/podkop) из подписки на VPN, с управлением из LuCI.
 
@@ -26,13 +28,13 @@ Podkop не умеет работать с подписками: он прини
 ## Установка одной командой
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Nubian353/podkop-sub/main/install.sh | sh -s -- --url "https://ВАША/ПОДПИСКА"
+curl -fsSL https://raw.githubusercontent.com/Nubian353/podkop-subscription-addon/main/install.sh | sh -s -- --url "https://ВАША/ПОДПИСКА"
 ```
 
 Без параметра `--url` установщик спросит ссылку интерактивно:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Nubian353/podkop-sub/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Nubian353/podkop-subscription-addon/main/install.sh | sh
 ```
 
 После установки:
@@ -55,10 +57,10 @@ curl -fsSL https://raw.githubusercontent.com/Nubian353/podkop-sub/main/install.s
 
 ```sh
 # 4 узла, без немедленного запуска
-curl -fsSL https://raw.githubusercontent.com/Nubian353/podkop-sub/main/install.sh | sh -s -- --url "https://…" --top 4 --no-run
+curl -fsSL https://raw.githubusercontent.com/Nubian353/podkop-subscription-addon/main/install.sh | sh -s -- --url "https://…" --top 4 --no-run
 
 # локально из склонированного репозитория
-git clone https://github.com/Nubian353/podkop-sub && cd podkop-sub && ./install.sh --url "https://…"
+git clone https://github.com/Nubian353/podkop-subscription-addon && cd podkop-subscription-addon && ./install.sh --url "https://…"
 ```
 
 ## Что и куда ставится
@@ -98,7 +100,7 @@ sh /usr/bin/podkop-sub-update.sh   # запустить вручную
 ## Удаление
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Nubian353/podkop-sub/main/uninstall.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Nubian353/podkop-subscription-addon/main/uninstall.sh | sh
 ```
 
 Удаляет файлы, cron-запись и конфиг. Настройки самого Podkop (DNS, списки, режим) не трогаются.
