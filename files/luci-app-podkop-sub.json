@@ -1,0 +1,8 @@
+{
+  "admin/services/podkop-sub": {
+    "title": "VPN-подписка",
+    "order": 43,
+    "action": { "type": "view", "path": "podkop-sub/settings" },
+    "depends": { "acl": [ "luci-app-podkop-sub" ], "uci": { "podkop_sub": true } }
+  }
+}

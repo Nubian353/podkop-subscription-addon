@@ -1,0 +1,13 @@
+{
+  "luci-app-podkop-sub": {
+    "description": "VPN subscription settings",
+    "read": {
+      "file": {
+        "/usr/bin/podkop-sub-update.sh": [ "exec" ],
+        "/tmp/podkop-sub.status": [ "read" ]
+      },
+      "uci": [ "podkop_sub" ]
+    },
+    "write": { "uci": [ "podkop_sub" ] }
+  }
+}
