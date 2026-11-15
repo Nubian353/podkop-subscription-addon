@@ -124,6 +124,8 @@ if [ -z "$SUB_URL" ]; then
 fi
 
 if [ -n "$SUB_URL" ]; then
+    # на чистой системе uci не создаёт новый файл конфига сам
+    [ -f /etc/config/podkop_sub ] || : > /etc/config/podkop_sub
     uci -q delete podkop_sub.settings >/dev/null 2>&1
     uci set podkop_sub.settings=settings
     uci set podkop_sub.settings.url="$SUB_URL"
