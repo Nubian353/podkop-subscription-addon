@@ -126,8 +126,24 @@ done
 cut -d' ' -f2- "$TMP/rank" | head -n "$LIMIT" > "$TMP/cand"
 [ -s "$TMP/cand" ] || { say "ошибка: пустой список кандидатов"; exit 1; }
 
+# 2a) к кандидатам добавляем текущие узлы: подписка иногда отдаёт меньше серверов,
+#     и без этого список сжимался бы от прогона к прогону
+: > "$TMP/probe"; : > "$TMP/probe_hosts"
+while IFS= read -r L; do
+    H=$(host_of "$L"); [ -n "$H" ] || continue
+    grep -qxF "$H" "$TMP/probe_hosts" && continue
+    printf '%s\n' "$H" >> "$TMP/probe_hosts"
+    printf '%s\n' "$L" >> "$TMP/probe"
+done < "$TMP/cand"
+for L in $CUR; do
+    H=$(host_of "$L"); [ -n "$H" ] || continue
+    grep -qxF "$H" "$TMP/probe_hosts" && continue
+    printf '%s\n' "$H" >> "$TMP/probe_hosts"
+    printf '%s\n' "$L" >> "$TMP/probe"
+done
+
 # 3) применить кандидатов и дождаться, пока urltest их прощупает
-apply_list "$TMP/cand" || { say "ошибка: не удалось применить конфиг Podkop"; exit 1; }
+apply_list "$TMP/probe" || { say "ошибка: не удалось применить конфиг Podkop"; exit 1; }
 sleep "$PROBE_WAIT"
 
 # 4) проверить каждого реальным прокси-хендшейком через Clash API
@@ -138,7 +154,7 @@ while IFS= read -r L; do
     D=$(podkop clash_api get_proxy_latency "main-${i}-out" 2>/dev/null | grep -oE '"delay": *[0-9]+' | grep -oE '[0-9]+')
     [ -n "$D" ] || continue
     printf '%s %s\n' "$D" "$L" >> "$TMP/alive"
-done < "$TMP/cand"
+done < "$TMP/probe"
 
 A=$(wc -l < "$TMP/alive")
 if [ "${A:-0}" -lt 1 ]; then
@@ -158,9 +174,9 @@ OLD=$(printf '%s\n' $CUR | sed '/^$/d' | sort)
 NEW=$(sed '/^$/d' "$TMP/final" | sort)
 
 if [ "$OLD" = "$NEW" ]; then
-    say "без изменений: $F узлов, живых по прокси $A из $(wc -l < "$TMP/cand")"
+    say "без изменений: $F узлов, живых по прокси $A из $(wc -l < "$TMP/probe")"
     exit 0
 fi
 
 apply_list "$TMP/final" || { say "ошибка: не удалось сохранить конфиг Podkop"; exit 1; }
-say "обновлено: $F узлов (живых по прокси $A из $(wc -l < "$TMP/cand"))"
+say "обновлено: $F узлов (живых по прокси $A из $(wc -l < "$TMP/probe"))"
