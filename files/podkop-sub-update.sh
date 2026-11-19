@@ -5,6 +5,10 @@
 #   /usr/bin/podkop-sub-update.sh            обычный запуск
 #   /usr/bin/podkop-sub-update.sh --check    только проверить подписку, ничего не менять
 #   SUB_URL=... /usr/bin/podkop-sub-update.sh --check   проверить конкретный URL
+#
+# Отбор двухступенчатый: ICMP-пинг только упорядочивает кандидатов, а в итоговый
+# список попадают лишь те, у кого реально поднялся прокси (проверка через Clash API
+# Podkop). Узлы, добавленные вручную (не из подписки), сохраняются.
 
 TAG="podkop-sub"
 STATUS_FILE="/tmp/podkop-sub.status"
@@ -26,18 +30,23 @@ SUB_URL="${SUB_URL:-$(uci -q get podkop_sub.settings.url)}"
 : "${TOP_N:=6}"
 : "${MIN_COUNT:=5}"
 
+# сколько кандидатов проверять реальным прокси-хендшейком за один прогон
+LIMIT=40
+# сколько ждать, пока Podkop поднимет outbounds и urltest их прощупает
+PROBE_WAIT=45
+
 [ "$ENABLED" = "0" ] && { say "автообновление выключено в настройках"; exit 0; }
 [ -n "$SUB_URL" ] || { say "ошибка: URL подписки не задан"; exit 1; }
 
 TMP=$(mktemp -d /tmp/podkop-sub.XXXXXX) || { say "ошибка: нет места в /tmp"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
-host_of() { printf '%s' "$1" | sed -E 's#^vless://[^@]*@(\[[^]]+\]|[^:/?]+).*#\1#'; }
+host_of() { printf '%s' "$1" | sed -E 's#^[a-z0-9]+://[^@]*@(\[[^]]+\]|[^:/?]+).*#\1#'; }
 rtt_of() { ping -c1 -W1 "$1" 2>/dev/null | grep -oE 'time=[0-9.]+' | head -1 | cut -d= -f2; }
 
-extract() { # extract <файл> — печатает vless-ссылки
+extract() { # extract <файл> — печатает ссылки
     tr ' ' '\n' < "$1" 2>/dev/null \
-        | grep -oE 'vless://[^"<>[:space:]]+' \
+        | grep -oE '(vless|hysteria2|vmess|trojan)://[^"<>[:space:]]+' \
         | grep -v '@localhost'
 }
 
@@ -61,7 +70,7 @@ if [ ! -s "$TMP/links" ]; then
 fi
 
 [ -s "$TMP/links" ] || {
-    say "ошибка: в ответе нет vless-ссылок (другой формат, пустая подписка или зашифрованное содержимое)"
+    say "ошибка: в ответе нет ссылок (другой формат, пустая подписка или зашифрованное содержимое)"
     exit 1
 }
 
@@ -76,6 +85,7 @@ while IFS= read -r L; do
     printf '%s\n' "$L" >> "$TMP/uniq"
 done < "$TMP/links"
 
+# ICMP-задержка — только для порядка кандидатов, не критерий живости
 : > "$TMP/rank"
 while IFS= read -r L; do
     H=$(host_of "$L")
@@ -85,49 +95,72 @@ done < "$TMP/uniq"
 
 [ -s "$TMP/rank" ] || { say "ошибка: ни один сервер из подписки не отвечает"; exit 1; }
 
+sort -n "$TMP/rank" > "$TMP/rank.sorted" && mv "$TMP/rank.sorted" "$TMP/rank"
+
 if [ "$CHECK" = "1" ]; then
-    say "проверка: ссылок $N, серверов $(wc -l < "$TMP/uniq"), отвечает $(wc -l < "$TMP/rank"), лучший RTT $(head -1 "$TMP/rank" | cut -d' ' -f1) мс"
+    say "проверка: ссылок $N, серверов $(wc -l < "$TMP/uniq"), отвечает по ICMP $(wc -l < "$TMP/rank"), лучший RTT $(head -1 "$TMP/rank" | cut -d' ' -f1) мс"
     exit 0
 fi
 
-# 1) оставляем живые текущие узлы — чтобы не дёргать Podkop без нужды
-: > "$TMP/chosen"; : > "$TMP/chosen_hosts"
 CUR=$(uci -q get podkop.main.urltest_proxy_links)
+
+apply_list() { # apply_list <файл со ссылками>
+    uci -q delete podkop.main.urltest_proxy_links
+    while IFS= read -r L; do
+        [ -n "$L" ] && uci add_list podkop.main.urltest_proxy_links="$L"
+    done < "$1"
+    uci set podkop.main.proxy_config_type="urltest"
+    uci commit podkop || return 1
+    /etc/init.d/podkop restart >/dev/null 2>&1
+}
+
+# 1) ручные узлы (не из подписки) — сохраняем как есть
+: > "$TMP/manual"
 for L in $CUR; do
-    [ "$(wc -l < "$TMP/chosen")" -ge "$TOP_N" ] && break
     H=$(host_of "$L"); [ -n "$H" ] || continue
-    grep -qxF "$H" "$TMP/chosen_hosts" && continue
-    [ -n "$(rtt_of "$H")" ] || continue
-    printf '%s\n' "$L" >> "$TMP/chosen"
-    printf '%s\n' "$H" >> "$TMP/chosen_hosts"
+    grep -qxF "$H" "$TMP/seen" && continue
+    printf '%s\n' "$L" >> "$TMP/manual"
 done
 
-# 2) добираем лучшими по задержке
-while read -r R L; do
-    [ "$(wc -l < "$TMP/chosen")" -ge "$TOP_N" ] && break
-    H=$(host_of "$L")
-    grep -qxF "$H" "$TMP/chosen_hosts" && continue
-    printf '%s\n' "$L" >> "$TMP/chosen"
-    printf '%s\n' "$H" >> "$TMP/chosen_hosts"
-done < "$TMP/rank"
+# 2) кандидаты — до LIMIT лучших по ICMP
+cut -d' ' -f2- "$TMP/rank" | head -n "$LIMIT" > "$TMP/cand"
+[ -s "$TMP/cand" ] || { say "ошибка: пустой список кандидатов"; exit 1; }
 
-M=$(wc -l < "$TMP/chosen")
-[ "${M:-0}" -ge 1 ] || { say "ошибка: пустой список узлов"; exit 1; }
+# 3) применить кандидатов и дождаться, пока urltest их прощупает
+apply_list "$TMP/cand" || { say "ошибка: не удалось применить конфиг Podkop"; exit 1; }
+sleep "$PROBE_WAIT"
 
+# 4) проверить каждого реальным прокси-хендшейком через Clash API
+: > "$TMP/alive"
+i=0
+while IFS= read -r L; do
+    i=$((i + 1))
+    D=$(podkop clash_api get_proxy_latency "main-${i}-out" 2>/dev/null | grep -oE '"delay": *[0-9]+' | grep -oE '[0-9]+')
+    [ -n "$D" ] || continue
+    printf '%s %s\n' "$D" "$L" >> "$TMP/alive"
+done < "$TMP/cand"
+
+A=$(wc -l < "$TMP/alive")
+if [ "${A:-0}" -lt 1 ]; then
+    # ни один не поднялся — это состояние хуже текущего, возвращаем прежний список
+    say "проверка прокси: ни один узел не поднялся, возвращаю прежний список"
+    printf '%s\n' $CUR > "$TMP/prev"
+    apply_list "$TMP/prev"
+    exit 1
+fi
+
+# 5) итог: TOP_N самых быстрых по реальному delay + ручные узлы
+sort -n "$TMP/alive" | cut -d' ' -f2- | head -n "$TOP_N" > "$TMP/final"
+[ -s "$TMP/manual" ] && cat "$TMP/manual" >> "$TMP/final"
+
+F=$(wc -l < "$TMP/final")
 OLD=$(printf '%s\n' $CUR | sed '/^$/d' | sort)
-NEW=$(sort "$TMP/chosen")
+NEW=$(sed '/^$/d' "$TMP/final" | sort)
 
 if [ "$OLD" = "$NEW" ]; then
-    say "без изменений: $M узлов, лучший RTT $(head -1 "$TMP/rank" | cut -d' ' -f1) мс"
+    say "без изменений: $F узлов, живых по прокси $A из $(wc -l < "$TMP/cand")"
     exit 0
 fi
 
-uci -q delete podkop.main.urltest_proxy_links
-while IFS= read -r L; do
-    uci add_list podkop.main.urltest_proxy_links="$L"
-done < "$TMP/chosen"
-uci set podkop.main.proxy_config_type="urltest"
-uci commit podkop || { say "ошибка: не удалось сохранить конфиг Podkop"; exit 1; }
-
-/etc/init.d/podkop restart >/dev/null 2>&1
-say "обновлено: $M узлов, лучший RTT $(head -1 "$TMP/rank" | cut -d' ' -f1) мс"
+apply_list "$TMP/final" || { say "ошибка: не удалось сохранить конфиг Podkop"; exit 1; }
+say "обновлено: $F узлов (живых по прокси $A из $(wc -l < "$TMP/cand"))"
